@@ -598,10 +598,6 @@ describe("Graph Functions", () => {
   // any more, but the rebuild endpoint AND the BFS / query branches
   // still call kv.list — both need explicit failure-mode tests.
   describe("snapshot write must not fail open (#1381)", () => {
-    // persistGraphDelta used to read the snapshot with the lenient readSnapshot,
-    // which returns null for a failed read as well as for an absent key. The
-    // caller coalesced that null into emptySnapshot() and wrote it back, so a
-    // single transient state::get failure replaced the counters with zeroes.
     async function seedSnapshot(totalNodes: number) {
       await kv.set("mem:graph:snapshot", "current", {
         version: 1,
@@ -614,7 +610,6 @@ describe("Graph Functions", () => {
       });
     }
 
-    // Fails every snapshot read, or only the first `failures` of them.
     async function extractWithFlakySnapshot(kvImpl: ReturnType<typeof mockKV>) {
       registerGraphFunction(sdk as never, kvImpl as never, mockProvider as never);
       return (await sdk.trigger("mem::graph-extract", {
@@ -661,7 +656,6 @@ describe("Graph Functions", () => {
         "mem:graph:snapshot",
         "current",
       );
-      // Merged onto the seeded counters, not replaced by a fresh delta's count.
       expect(snap!.stats.totalNodes).toBeGreaterThan(39999);
     });
 
@@ -690,6 +684,71 @@ describe("Graph Functions", () => {
       );
       expect(snap).not.toBeNull();
       expect(snap!.stats.totalNodes).toBe(2);
+    });
+  });
+
+  describe("snapshot-reported total floor (#1382)", () => {
+    function seedSnapshot(
+      stats: { totalNodes: number; nodesByType: Record<string, number> },
+      topNodeCount: number,
+    ) {
+      const topNodes = Array.from({ length: topNodeCount }, (_, i) => ({
+        id: `n_${i}`,
+        type: "file",
+        name: `node-${i}`,
+        properties: {},
+        sourceObservationIds: [`obs_${i}`],
+        firstSeen: "2026-01-01T00:00:00Z",
+        lastSeen: "2026-01-01T00:00:00Z",
+        observationCount: 1,
+        stale: false,
+      }));
+      return kv.set("mem:graph:snapshot", "current", {
+        version: 1,
+        topNodes,
+        topEdges: [],
+        topDegrees: {},
+        stats: {
+          totalNodes: stats.totalNodes,
+          totalEdges: 0,
+          nodesByType: stats.nodesByType,
+          edgesByType: {},
+        },
+        updatedAt: "2026-01-01T00:00:00Z",
+        dirty: false,
+      });
+    }
+
+    it("does not report fewer nodes than it returns when the counter is low", async () => {
+      await seedSnapshot({ totalNodes: 101, nodesByType: { file: 101 } }, 343);
+
+      const result = (await sdk.trigger("mem::graph-query", {})) as GraphQueryResult;
+
+      expect(result.nodes.length).toBe(343);
+      expect(result.totalNodes).toBe(343);
+      expect(result.truncated).toBe(false);
+    });
+
+    it("leaves a healthy counter above the top-N cap alone and raises the banner", async () => {
+      await seedSnapshot({ totalNodes: 40000, nodesByType: { file: 40000 } }, 343);
+
+      const result = (await sdk.trigger("mem::graph-query", {})) as GraphQueryResult;
+
+      expect(result.nodes.length).toBe(343);
+      expect(result.totalNodes).toBe(40000);
+      expect(result.truncated).toBe(true);
+    });
+
+    it("applies the same floor to the type-filtered total", async () => {
+      await seedSnapshot({ totalNodes: 101, nodesByType: { file: 101 } }, 343);
+
+      const result = (await sdk.trigger("mem::graph-query", {
+        nodeType: "file",
+      })) as GraphQueryResult;
+
+      expect(result.nodes.length).toBe(343);
+      expect(result.totalNodes).toBe(343);
+      expect(result.truncated).toBe(false);
     });
   });
 
