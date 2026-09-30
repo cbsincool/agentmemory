@@ -598,11 +598,6 @@ describe("Graph Functions", () => {
   // any more, but the rebuild endpoint AND the BFS / query branches
   // still call kv.list — both need explicit failure-mode tests.
   describe("snapshot-reported total floor (#1382)", () => {
-    // totalNodes feeds the viewer badge and gates the "showing N of M" banner
-    // via `truncated`. It is read straight from the snapshot's counters, which
-    // a lossy write can leave below the nodes the snapshot actually holds, so
-    // the response could report fewer nodes than it returned with the banner
-    // switched off.
     function seedSnapshot(
       stats: { totalNodes: number; nodesByType: Record<string, number> },
       topNodeCount: number,
@@ -641,7 +636,6 @@ describe("Graph Functions", () => {
 
       expect(result.nodes.length).toBe(343);
       expect(result.totalNodes).toBe(343);
-      // Nothing is actually hidden, so the banner correctly stays off.
       expect(result.truncated).toBe(false);
     });
 
