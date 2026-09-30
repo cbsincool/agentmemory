@@ -246,14 +246,43 @@ describe("mem::forget search-index cleanup", () => {
     await kv.set("mem:obs:ses_1", "obs_img", { id: "obs_img", imageRef: "img_1" });
     getSearchIndex().add(memoryToObservation(makeMemory("obs_img")));
 
-    await sdk.trigger({
+    const result = (await sdk.trigger({
       function_id: "mem::forget",
       payload: { sessionId: "ses_1", observationIds: ["obs_img"] },
-    });
+    })) as { deleted: number; failed: number; cleanupFailed: number; cleanupFailures?: Array<{ id: string }> };
 
     expect(await kv.get("mem:obs:ses_1", "obs_img")).toBeNull();
     expect(getSearchIndex().has("obs_img")).toBe(false);
     expect(persistence.save).toHaveBeenCalled();
+    expect(result.deleted).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(result.cleanupFailed).toBe(1);
+    expect(result.cleanupFailures?.[0].id).toBe("obs_img");
+    const audits = await kv.list<{ targetIds: string[]; details: { deleted: number } }>(currentAuditScope());
+    expect(audits).toHaveLength(1);
+    expect(audits[0].targetIds).toEqual(["obs_img"]);
+    expect(audits[0].details.deleted).toBe(1);
+  });
+
+  it("counts and audits a forgotten memory even when its cleanup fails", async () => {
+    const sdk = mockSdk();
+    const kv = mockKV();
+    registerRememberFunction(sdk as never, kv as never);
+    decrementImageRef.mockRejectedValueOnce(new Error("image store down"));
+
+    await kv.set("mem:memories", "mem_img", { ...makeMemory("mem_img"), imageRef: "img_2" });
+
+    const result = (await sdk.trigger({
+      function_id: "mem::forget",
+      payload: { memoryId: "mem_img" },
+    })) as { deleted: number; failed: number; cleanupFailed: number };
+
+    expect(await kv.get("mem:memories", "mem_img")).toBeNull();
+    expect(result.deleted).toBe(1);
+    expect(result.failed).toBe(0);
+    expect(result.cleanupFailed).toBe(1);
+    const audits = await kv.list<{ targetIds: string[] }>(currentAuditScope());
+    expect(audits[0].targetIds).toEqual(["mem_img"]);
   });
 
   it("flushes persistence immediately when a memory is forgotten", async () => {

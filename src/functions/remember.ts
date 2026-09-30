@@ -289,6 +289,19 @@ export function registerRememberFunction(sdk: IIIClient, kv: StateKV): void {
         failures.push({ id, error: "delete_failed" });
       };
 
+      const cleanupFailures: Array<{ id: string; error: string }> = [];
+      const cleanup = async (id: string, steps: () => Promise<void>) => {
+        try {
+          await steps();
+        } catch (err) {
+          logger.warn("Forget cleanup failed", {
+            id,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          cleanupFailures.push({ id, error: "cleanup_failed" });
+        }
+      };
+
       const attempt = async (id: string, remove: () => Promise<boolean>) => {
         try {
           if (await remove()) deleted++;
@@ -308,18 +321,17 @@ export function registerRememberFunction(sdk: IIIClient, kv: StateKV): void {
           (await kv.get<ObservationRef>(KV.observations(sessionId), obsId));
         if (!obs) return false;
         await kv.delete(KV.observations(sessionId), obsId);
+        deletedObservationIds.push(obsId);
+        getSearchIndex().remove(obsId);
+        vectorIndexRemove(obsId);
+        indexCleaned = true;
         await unindexObservationSession(kv, obsId).catch(() => {});
-        try {
+        await cleanup(obsId, async () => {
           if (obs.imageData) await decrementImageRef(kv, sdk, obs.imageData);
           if (obs.imageRef && obs.imageRef !== obs.imageData) {
             await decrementImageRef(kv, sdk, obs.imageRef);
           }
-        } finally {
-          getSearchIndex().remove(obsId);
-          vectorIndexRemove(obsId);
-          indexCleaned = true;
-        }
-        deletedObservationIds.push(obsId);
+        });
         return true;
       };
 
@@ -329,17 +341,14 @@ export function registerRememberFunction(sdk: IIIClient, kv: StateKV): void {
           const mem = await kv.get<Memory>(KV.memories, memoryId);
           if (!mem) return false;
           await kv.delete(KV.memories, memoryId);
-          try {
-            if (mem.imageRef) {
-              await decrementImageRef(kv, sdk, mem.imageRef);
-            }
-          } finally {
-            getSearchIndex().remove(memoryId);
-            vectorIndexRemove(memoryId);
-            indexCleaned = true;
-          }
-          await deleteAccessLog(kv, memoryId);
           deletedMemoryIds.push(memoryId);
+          getSearchIndex().remove(memoryId);
+          vectorIndexRemove(memoryId);
+          indexCleaned = true;
+          await cleanup(memoryId, async () => {
+            if (mem.imageRef) await decrementImageRef(kv, sdk, mem.imageRef);
+            await deleteAccessLog(kv, memoryId);
+          });
           return true;
         });
       }
@@ -409,6 +418,8 @@ export function registerRememberFunction(sdk: IIIClient, kv: StateKV): void {
             notFound: notFound.length,
             failed: failures.length,
             failures: failures.length > 0 ? failures : undefined,
+            cleanupFailed: cleanupFailures.length,
+            cleanupFailures: cleanupFailures.length > 0 ? cleanupFailures : undefined,
             reason: "user-initiated forget",
           },
         );
@@ -425,6 +436,8 @@ export function registerRememberFunction(sdk: IIIClient, kv: StateKV): void {
         notFound,
         failed: failures.length,
         failures: failures.length > 0 ? failures : undefined,
+        cleanupFailed: cleanupFailures.length,
+        cleanupFailures: cleanupFailures.length > 0 ? cleanupFailures : undefined,
       };
     },
   );
