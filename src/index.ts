@@ -262,10 +262,14 @@ async function main() {
   const kv = new StateKV(sdk, { backend: stateBackend });
   const stateReadiness = await waitForStateReady(sdk);
   if (!stateReadiness.ready) {
-    bootWarn(
-      `State worker did not become ready within ${stateReadiness.waitedMs}ms; boot reads may fail: ${stateReadiness.error ?? "timeout"}`,
+    // A state outage longer than the readiness window would make the one-shot
+    // boot recovery load an empty index and then report Ready. Exit instead so
+    // a supervised worker restarts with the state worker already registered.
+    throw new Error(
+      `State worker did not become ready within ${stateReadiness.waitedMs}ms: ${stateReadiness.error ?? "timeout"}`,
     );
-  } else if (stateReadiness.waitedMs > 0) {
+  }
+  if (stateReadiness.waitedMs > 0) {
     bootLog(
       `State worker ready after ${stateReadiness.waitedMs}ms (${stateReadiness.attempts} attempts)`,
     );

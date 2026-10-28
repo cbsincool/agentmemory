@@ -59,19 +59,23 @@ export async function waitForStateReady(
   const startedAt = now();
   let attempts = 0;
   let lastError: string | undefined;
+  const probeTimeoutMs = () =>
+    Math.min(PROBE_TIMEOUT_MS, Math.max(1, timeoutMs - (now() - startedAt)));
 
   for (;;) {
     attempts += 1;
     try {
+      // timeoutMs is the SDK's per-invocation timeout. It rejects and releases
+      // the invocation, so a stalled state call cannot outlive the deadline.
       await sdk.trigger({
         function_id: "state::list",
         payload: { scope },
-        timeoutMs: PROBE_TIMEOUT_MS,
+        timeoutMs: probeTimeoutMs(),
       });
       await sdk.trigger({
         function_id: "state::get",
         payload: { scope, key: READINESS_PROBE_KEY },
-        timeoutMs: PROBE_TIMEOUT_MS,
+        timeoutMs: probeTimeoutMs(),
       });
       return { ready: true, waitedMs: now() - startedAt, attempts };
     } catch (error) {

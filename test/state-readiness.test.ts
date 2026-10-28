@@ -87,6 +87,20 @@ describe("waitForStateReady", () => {
     expect(result).toEqual({ ready: true, waitedMs: 200, attempts: 3 });
     expect(sleeps).toEqual([100, 100]);
     expect(trigger).toHaveBeenCalledTimes(4);
+    expect(trigger).toHaveBeenNthCalledWith(
+      3,
+      expect.objectContaining({
+        function_id: "state::list",
+        timeoutMs: 800,
+      }),
+    );
+    expect(trigger).toHaveBeenNthCalledWith(
+      4,
+      expect.objectContaining({
+        function_id: "state::get",
+        timeoutMs: 800,
+      }),
+    );
   });
 
   it("waits when only state::get is still missing", async () => {
