@@ -296,6 +296,33 @@ function parseAttrs(raw: string): Record<string, string> {
   return attrs;
 }
 
+const MAX_ENTITY_NAME_LENGTH = 512;
+const MAX_ENTITY_PROPERTIES = 32;
+const MAX_PROPERTY_KEY_LENGTH = 128;
+const MAX_PROPERTY_VALUE_LENGTH = 512;
+const PLACEHOLDER_ENTITY_NAMES = new Set([
+  "exact name",
+  "entity name",
+  "key",
+  "value",
+]);
+
+function lastXmlBlock(xml: string, tag: string): string {
+  const re = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g");
+  let last = "";
+  let match;
+  while ((match = re.exec(xml)) !== null) last = match[1];
+  return last;
+}
+
+function validEntityName(raw: string | undefined): string | null {
+  const name = raw?.trim() ?? "";
+  if (!name || name.length > MAX_ENTITY_NAME_LENGTH) return null;
+  if (/[\r\n<>]/.test(name)) return null;
+  if (PLACEHOLDER_ENTITY_NAMES.has(name.toLowerCase())) return null;
+  return name;
+}
+
 function parseGraphXml(
   xml: string,
   observationIds: string[],
@@ -307,19 +334,34 @@ function parseGraphXml(
   const edges: GraphEdge[] = [];
   const now = new Date().toISOString();
 
+  // Reasoning models can return their thinking as the response. The thinking
+  // often repeats the prompt's XML example, so a global scan would turn that
+  // example into graph nodes. Parse only the final well-formed payload block;
+  // if the model omitted the wrapper, fall back to the whole response and let
+  // the name checks below reject reasoning text.
+  const entitiesBlock = lastXmlBlock(xml, "entities");
+  const relationshipsBlock = lastXmlBlock(xml, "relationships");
+  const payload =
+    entitiesBlock || relationshipsBlock
+      ? `${entitiesBlock}\n${relationshipsBlock}`
+      : xml;
+
   const entitySelfClose = /<entity\b([^>]*?)\/>/g;
   const entityWithBody = /<entity\b([^>]*[^/])>([\s\S]*?)<\/entity>/g;
 
   const addEntity = (rawAttrs: string, propsBlock = ""): void => {
     const attrs = parseAttrs(rawAttrs);
     const type = attrs["type"] as GraphNode["type"] | undefined;
-    const name = attrs["name"];
+    const name = validEntityName(attrs["name"]);
     if (!type || !name) return;
     const properties: Record<string, string> = {};
     const propRegex = /<property\s+key="([^"]+)">([^<]*)<\/property>/g;
     let propMatch;
     while ((propMatch = propRegex.exec(propsBlock)) !== null) {
-      properties[propMatch[1]] = propMatch[2];
+      if (Object.keys(properties).length >= MAX_ENTITY_PROPERTIES) break;
+      const key = propMatch[1];
+      if (key.length > MAX_PROPERTY_KEY_LENGTH) continue;
+      properties[key] = propMatch[2].slice(0, MAX_PROPERTY_VALUE_LENGTH);
     }
     nodes.push({
       id: generateId("gn"),
@@ -332,19 +374,19 @@ function parseGraphXml(
   };
 
   let match;
-  while ((match = entitySelfClose.exec(xml)) !== null) {
+  while ((match = entitySelfClose.exec(payload)) !== null) {
     addEntity(match[1]);
   }
-  while ((match = entityWithBody.exec(xml)) !== null) {
+  while ((match = entityWithBody.exec(payload)) !== null) {
     addEntity(match[1], match[2]);
   }
 
   const relRegex = /<relationship\b([^>]*?)\/>/g;
-  while ((match = relRegex.exec(xml)) !== null) {
+  while ((match = relRegex.exec(payload)) !== null) {
     const attrs = parseAttrs(match[1]);
     const type = attrs["type"] as GraphEdge["type"] | undefined;
-    const sourceName = attrs["source"];
-    const targetName = attrs["target"];
+    const sourceName = validEntityName(attrs["source"]);
+    const targetName = validEntityName(attrs["target"]);
     if (!type || !sourceName || !targetName) continue;
     const parsedWeight = parseFloat(attrs["weight"] ?? "");
     const weight = Number.isFinite(parsedWeight) ? parsedWeight : 0.5;

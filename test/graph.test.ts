@@ -157,6 +157,58 @@ describe("Graph Functions", () => {
     expect(edges[0].weight).toBeCloseTo(0.9, 5);
   });
 
+  it("ignores reasoning text before the final entities block", async () => {
+    mockProvider.compress.mockResolvedValueOnce(`I should output the XML now.
+Example:
+<entities>
+<entity type="concept" name="exact name"/>
+</entities>
+Final answer:
+<entities>
+<entity type="file" name="src/index.ts"/>
+<entity type="function" name="main"/>
+</entities>
+<relationships>
+<relationship type="uses" source="src/index.ts" target="main" weight="0.9"/>
+</relationships>`);
+
+    const result = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean; nodesAdded: number; edgesAdded: number };
+
+    expect(result.success).toBe(true);
+    expect(result.nodesAdded).toBe(2);
+    const nodes = await kv.list<GraphNode>("mem:graph:nodes");
+    expect(nodes.map((n) => n.name).sort()).toEqual(["main", "src/index.ts"]);
+    expect(nodes.some((n) => n.name === "exact name")).toBe(false);
+  });
+
+  it("rejects reasoning-like names and caps oversized properties", async () => {
+    const longName = "x".repeat(600);
+    const properties = Array.from(
+      { length: 35 },
+      (_, i) => `<property key="p${i}">${i === 0 ? "y".repeat(600) : "v"}</property>`,
+    ).join("");
+    mockProvider.compress.mockResolvedValueOnce(`<entities>
+<entity type="concept" name="line one
+line two"/>
+<entity type="concept" name="${longName}"/>
+<entity type="concept" name="valid">${properties}</entity>
+</entities>`);
+
+    const result = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean; nodesAdded: number };
+
+    expect(result.success).toBe(true);
+    expect(result.nodesAdded).toBe(1);
+    const nodes = await kv.list<GraphNode>("mem:graph:nodes");
+    expect(nodes).toHaveLength(1);
+    expect(nodes[0].name).toBe("valid");
+    expect(Object.keys(nodes[0].properties ?? {})).toHaveLength(32);
+    expect((nodes[0].properties ?? {})["p0"]).toHaveLength(512);
+  });
+
   it("graph-query with search returns matching nodes", async () => {
     await sdk.trigger("mem::graph-extract", { observations: [testObs] });
 
