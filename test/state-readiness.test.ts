@@ -6,6 +6,7 @@ import { waitForStateReady } from "../src/state/state-readiness.js";
 type TriggerCall = {
   function_id: string;
   payload: { scope: string; key?: string };
+  timeoutMs?: number;
 };
 
 function missingFunction(functionId: string): Error & { code: string } {
@@ -33,11 +34,34 @@ describe("waitForStateReady", () => {
     expect(trigger).toHaveBeenNthCalledWith(1, {
       function_id: "state::list",
       payload: { scope: KV.config },
+      timeoutMs: 2000,
     });
     expect(trigger).toHaveBeenNthCalledWith(2, {
       function_id: "state::get",
       payload: { scope: KV.config, key: expect.any(String) },
+      timeoutMs: 2000,
     });
+  });
+
+  it("bounds a stalled probe instead of waiting for the worker timeout", async () => {
+    const trigger = vi.fn(async () => {
+      throw new Error("Invocation timeout after 2000ms");
+    });
+    const sleep = vi.fn(async () => undefined);
+
+    const result = await waitForStateReady(asClient(trigger), {
+      now: () => 0,
+      sleep,
+    });
+
+    expect(result).toEqual({
+      ready: false,
+      waitedMs: 0,
+      attempts: 1,
+      error: "Invocation timeout after 2000ms",
+    });
+    expect(trigger).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
   });
 
   it("retries when the engine has registered neither function yet", async () => {

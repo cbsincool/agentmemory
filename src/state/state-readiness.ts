@@ -3,6 +3,7 @@ import { KV } from "./schema.js";
 
 const STATE_READY_TIMEOUT_MS = 15_000;
 const STATE_READY_INTERVAL_MS = 100;
+const PROBE_TIMEOUT_MS = 2_000;
 const READINESS_PROBE_KEY = "__agentmemory_state_readiness__";
 
 export type StateReadiness = {
@@ -40,7 +41,9 @@ function isStateFunctionMissing(error: unknown): boolean {
  * and are not retried: the vector checkpoint never loads, the keyword index
  * skips sessions, and capture recovery stops. Wait for both functions before
  * the first boot read; the timeout and non-readiness errors return without
- * blocking startup.
+ * blocking startup. Each probe carries its own 2 s invocation timeout, so a
+ * state worker that accepts the call but never answers cannot hold boot for
+ * the worker's 180 s invocation budget.
  */
 export async function waitForStateReady(
   sdk: TriggerClient,
@@ -60,10 +63,15 @@ export async function waitForStateReady(
   for (;;) {
     attempts += 1;
     try {
-      await sdk.trigger({ function_id: "state::list", payload: { scope } });
+      await sdk.trigger({
+        function_id: "state::list",
+        payload: { scope },
+        timeoutMs: PROBE_TIMEOUT_MS,
+      });
       await sdk.trigger({
         function_id: "state::get",
         payload: { scope, key: READINESS_PROBE_KEY },
+        timeoutMs: PROBE_TIMEOUT_MS,
       });
       return { ready: true, waitedMs: now() - startedAt, attempts };
     } catch (error) {
