@@ -300,6 +300,7 @@ const MAX_ENTITY_NAME_LENGTH = 512;
 const MAX_ENTITY_PROPERTIES = 32;
 const MAX_PROPERTY_KEY_LENGTH = 128;
 const MAX_PROPERTY_VALUE_LENGTH = 512;
+const MAX_PROPERTY_BYTES = 8 * 1024;
 const PLACEHOLDER_ENTITY_NAMES = new Set([
   "exact name",
   "entity name",
@@ -307,12 +308,13 @@ const PLACEHOLDER_ENTITY_NAMES = new Set([
   "value",
 ]);
 
-function lastXmlBlock(xml: string, tag: string): string {
-  const re = new RegExp(`<${tag}>([\\s\\S]*?)</${tag}>`, "g");
-  let last = "";
-  let match;
-  while ((match = re.exec(xml)) !== null) last = match[1];
-  return last;
+function lastXmlBlock(xml: string, tag: string): string | null {
+  const open = `<${tag}>`;
+  const close = `</${tag}>`;
+  const start = xml.lastIndexOf(open);
+  if (start < 0) return null;
+  const end = xml.indexOf(close, start + open.length);
+  return end < 0 ? null : xml.slice(start + open.length, end);
 }
 
 function validEntityName(raw: string | undefined): string | null {
@@ -341,10 +343,9 @@ function parseGraphXml(
   // the name checks below reject reasoning text.
   const entitiesBlock = lastXmlBlock(xml, "entities");
   const relationshipsBlock = lastXmlBlock(xml, "relationships");
-  const payload =
-    entitiesBlock || relationshipsBlock
-      ? `${entitiesBlock}\n${relationshipsBlock}`
-      : xml;
+  const entityPayload = entitiesBlock !== null ? entitiesBlock : xml;
+  const relationshipPayload =
+    relationshipsBlock !== null ? relationshipsBlock : xml;
 
   const entitySelfClose = /<entity\b([^>]*?)\/>/g;
   const entityWithBody = /<entity\b([^>]*[^/])>([\s\S]*?)<\/entity>/g;
@@ -355,13 +356,19 @@ function parseGraphXml(
     const name = validEntityName(attrs["name"]);
     if (!type || !name) return;
     const properties: Record<string, string> = {};
+    let propertyBytes = 2;
     const propRegex = /<property\s+key="([^"]+)">([^<]*)<\/property>/g;
     let propMatch;
     while ((propMatch = propRegex.exec(propsBlock)) !== null) {
       if (Object.keys(properties).length >= MAX_ENTITY_PROPERTIES) break;
       const key = propMatch[1];
       if (key.length > MAX_PROPERTY_KEY_LENGTH) continue;
-      properties[key] = propMatch[2].slice(0, MAX_PROPERTY_VALUE_LENGTH);
+      const value = propMatch[2].slice(0, MAX_PROPERTY_VALUE_LENGTH);
+      const size =
+        Buffer.byteLength(key) + Buffer.byteLength(value) + 4;
+      if (propertyBytes + size > MAX_PROPERTY_BYTES) break;
+      properties[key] = value;
+      propertyBytes += size;
     }
     nodes.push({
       id: generateId("gn"),
@@ -374,15 +381,15 @@ function parseGraphXml(
   };
 
   let match;
-  while ((match = entitySelfClose.exec(payload)) !== null) {
+  while ((match = entitySelfClose.exec(entityPayload)) !== null) {
     addEntity(match[1]);
   }
-  while ((match = entityWithBody.exec(payload)) !== null) {
+  while ((match = entityWithBody.exec(entityPayload)) !== null) {
     addEntity(match[1], match[2]);
   }
 
   const relRegex = /<relationship\b([^>]*?)\/>/g;
-  while ((match = relRegex.exec(payload)) !== null) {
+  while ((match = relRegex.exec(relationshipPayload)) !== null) {
     const attrs = parseAttrs(match[1]);
     const type = attrs["type"] as GraphEdge["type"] | undefined;
     const sourceName = validEntityName(attrs["source"]);
