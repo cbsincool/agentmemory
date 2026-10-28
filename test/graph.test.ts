@@ -308,6 +308,30 @@ line two"/>
     );
   });
 
+  it("rejects entity and relationship types outside the schema", async () => {
+    mockProvider.compress.mockResolvedValueOnce(`<entities>
+<entity type="file|function|concept|error|decision|pattern|library|person" name="bad"/>
+<entity type="file" name="src/index.ts"/>
+<entity type="function" name="main"/>
+</entities>
+<relationships>
+<relationship type="not_a_type" source="src/index.ts" target="main"/>
+<relationship type="uses" source="src/index.ts" target="main" weight="0.9"/>
+</relationships>`);
+
+    const result = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean; nodesAdded: number; edgesAdded: number };
+
+    expect(result.success).toBe(true);
+    expect(result.nodesAdded).toBe(2);
+    expect(result.edgesAdded).toBe(1);
+    const nodes = await kv.list<GraphNode>("mem:graph:nodes");
+    expect(nodes.map((n) => n.name).sort()).toEqual(["main", "src/index.ts"]);
+    const edges = await kv.list<GraphEdge>("mem:graph:edges");
+    expect(edges).toHaveLength(1);
+  });
+
   it("graph-query with search returns matching nodes", async () => {
     await sdk.trigger("mem::graph-extract", { observations: [testObs] });
 

@@ -301,6 +301,39 @@ const MAX_ENTITY_PROPERTIES = 32;
 const MAX_PROPERTY_KEY_LENGTH = 128;
 const MAX_PROPERTY_VALUE_LENGTH = 512;
 const MAX_PROPERTY_BYTES = 8 * 1024;
+const GRAPH_NODE_TYPES = new Set<GraphNode["type"]>([
+  "file",
+  "function",
+  "concept",
+  "error",
+  "decision",
+  "pattern",
+  "library",
+  "person",
+  "project",
+  "preference",
+  "location",
+  "organization",
+  "event",
+]);
+const GRAPH_EDGE_TYPES = new Set<GraphEdge["type"]>([
+  "uses",
+  "imports",
+  "modifies",
+  "causes",
+  "fixes",
+  "depends_on",
+  "related_to",
+  "works_at",
+  "prefers",
+  "blocked_by",
+  "caused_by",
+  "optimizes_for",
+  "rejected",
+  "avoids",
+  "located_in",
+  "succeeded_by",
+]);
 const PLACEHOLDER_ENTITY_NAMES = new Set([
   "exact name",
   "entity name",
@@ -354,7 +387,12 @@ function parseGraphXml(
 
   const addEntity = (rawAttrs: string, propsBlock = ""): void => {
     const attrs = parseAttrs(rawAttrs);
-    const type = attrs["type"] as GraphNode["type"] | undefined;
+    const rawType = attrs["type"];
+    const type =
+      typeof rawType === "string" &&
+      GRAPH_NODE_TYPES.has(rawType as GraphNode["type"])
+        ? (rawType as GraphNode["type"])
+        : undefined;
     const name = validEntityName(attrs["name"]);
     if (!type || !name) return;
     const properties: Record<string, string> = {};
@@ -392,7 +430,12 @@ function parseGraphXml(
   const relRegex = /<relationship\b([^>]*?)\/>/g;
   while ((match = relRegex.exec(relationshipPayload)) !== null) {
     const attrs = parseAttrs(match[1]);
-    const type = attrs["type"] as GraphEdge["type"] | undefined;
+    const rawType = attrs["type"];
+    const type =
+      typeof rawType === "string" &&
+      GRAPH_EDGE_TYPES.has(rawType as GraphEdge["type"])
+        ? (rawType as GraphEdge["type"])
+        : undefined;
     const sourceName = validEntityName(attrs["source"]);
     const targetName = validEntityName(attrs["target"]);
     if (!type || !sourceName || !targetName) continue;
