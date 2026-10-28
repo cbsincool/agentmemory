@@ -30,7 +30,7 @@ import {
   createImageEmbeddingProvider,
 } from "./providers/index.js";
 import { StateKV } from "./state/kv.js";
-import { waitForStateReady } from "./state/state-readiness.js";
+import { assertStateReady, waitForStateReady } from "./state/state-readiness.js";
 import { VectorIndex } from "./state/vector-index.js";
 import type { SearchLayer } from "./state/search-layer.js";
 import { HybridSearch } from "./state/hybrid-search.js";
@@ -261,14 +261,7 @@ async function main() {
   } catch {}
   const kv = new StateKV(sdk, { backend: stateBackend });
   const stateReadiness = await waitForStateReady(sdk);
-  if (!stateReadiness.ready) {
-    // A state outage longer than the readiness window would make the one-shot
-    // boot recovery load an empty index and then report Ready. Exit instead so
-    // a supervised worker restarts with the state worker already registered.
-    throw new Error(
-      `State worker did not become ready within ${stateReadiness.waitedMs}ms: ${stateReadiness.error ?? "timeout"}`,
-    );
-  }
+  assertStateReady(stateReadiness);
   if (stateReadiness.waitedMs > 0) {
     bootLog(
       `State worker ready after ${stateReadiness.waitedMs}ms (${stateReadiness.attempts} attempts)`,

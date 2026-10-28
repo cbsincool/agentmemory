@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { IIIClient } from "iii-sdk";
 import { KV } from "../src/state/schema.js";
-import { waitForStateReady } from "../src/state/state-readiness.js";
+import { assertStateReady, waitForStateReady } from "../src/state/state-readiness.js";
 
 type TriggerCall = {
   function_id: string;
@@ -43,25 +43,50 @@ describe("waitForStateReady", () => {
     });
   });
 
-  it("bounds a stalled probe instead of waiting for the worker timeout", async () => {
+  it("retries a probe timeout and proceeds once the connection answers", async () => {
+    let clock = 0;
+    let calls = 0;
+    const trigger = vi.fn(async () => {
+      calls += 1;
+      if (calls === 1) throw new Error("Invocation timeout after 2000ms");
+      return null;
+    });
+
+    const result = await waitForStateReady(asClient(trigger), {
+      timeoutMs: 1000,
+      intervalMs: 100,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
+    });
+
+    expect(result).toEqual({ ready: true, waitedMs: 100, attempts: 2 });
+    expect(trigger).toHaveBeenCalledTimes(3);
+  });
+
+  it("returns not-ready when every probe times out", async () => {
+    let clock = 0;
     const trigger = vi.fn(async () => {
       throw new Error("Invocation timeout after 2000ms");
     });
-    const sleep = vi.fn(async () => undefined);
 
     const result = await waitForStateReady(asClient(trigger), {
-      now: () => 0,
-      sleep,
+      timeoutMs: 250,
+      intervalMs: 100,
+      now: () => clock,
+      sleep: async (ms) => {
+        clock += ms;
+      },
     });
 
     expect(result).toEqual({
       ready: false,
-      waitedMs: 0,
-      attempts: 1,
+      waitedMs: 250,
+      attempts: 4,
       error: "Invocation timeout after 2000ms",
     });
-    expect(trigger).toHaveBeenCalledTimes(1);
-    expect(sleep).not.toHaveBeenCalled();
+    expect(trigger).toHaveBeenCalledTimes(4);
   });
 
   it("retries when the engine has registered neither function yet", async () => {
@@ -172,5 +197,24 @@ describe("waitForStateReady", () => {
     });
     expect(trigger).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
+  });
+});
+
+describe("assertStateReady", () => {
+  it("throws when readiness failed so the worker exits instead of reporting Ready", () => {
+    expect(() =>
+      assertStateReady({
+        ready: false,
+        waitedMs: 15000,
+        attempts: 150,
+        error: "Function state::list not found in namespace agentmemory",
+      }),
+    ).toThrow(/State worker did not become ready within 15000ms/);
+  });
+
+  it("accepts a ready state", () => {
+    expect(() =>
+      assertStateReady({ ready: true, waitedMs: 5, attempts: 1 }),
+    ).not.toThrow();
   });
 });

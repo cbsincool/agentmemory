@@ -27,11 +27,18 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isStateFunctionMissing(error: unknown): boolean {
-  if ((error as { code?: unknown } | null)?.code === "function_not_found") {
+function isRetryableProbeError(error: unknown): boolean {
+  const code = (error as { code?: unknown } | null)?.code;
+  if (
+    code === "function_not_found" ||
+    code === "invocation_timeout" ||
+    code === "timeout"
+  ) {
     return true;
   }
-  return /Function state::(?:get|list) not found/i.test(errorMessage(error));
+  return /Function state::(?:get|list) not found|timed out|timeout|ETIMEDOUT/i.test(
+    errorMessage(error),
+  );
 }
 
 /**
@@ -40,10 +47,11 @@ function isStateFunctionMissing(error: unknown): boolean {
  * later. Boot reads that run in that window fail with `function_not_found`
  * and are not retried: the vector checkpoint never loads, the keyword index
  * skips sessions, and capture recovery stops. Wait for both functions before
- * the first boot read; the timeout and non-readiness errors return without
- * blocking startup. Each probe carries its own 2 s invocation timeout, so a
- * state worker that accepts the call but never answers cannot hold boot for
- * the worker's 180 s invocation budget.
+ * the first boot read; missing functions and probe timeouts are retried, while
+ * other errors return without blocking startup. Each probe carries its own
+ * timeout, bounded by the time left before the readiness deadline, so a state
+ * worker that accepts the call but never answers cannot hold boot for the
+ * worker's 180 s invocation budget.
  */
 export async function waitForStateReady(
   sdk: TriggerClient,
@@ -80,7 +88,7 @@ export async function waitForStateReady(
       return { ready: true, waitedMs: now() - startedAt, attempts };
     } catch (error) {
       lastError = errorMessage(error);
-      if (!isStateFunctionMissing(error)) {
+      if (!isRetryableProbeError(error)) {
         return {
           ready: false,
           waitedMs: now() - startedAt,
@@ -95,5 +103,18 @@ export async function waitForStateReady(
       return { ready: false, waitedMs: elapsed, attempts, error: lastError };
     }
     await sleep(Math.min(intervalMs, timeoutMs - elapsed));
+  }
+}
+
+/**
+ * A failed readiness wait means the one-shot boot recovery would read an empty
+ * state, skip keyword sessions, and report Ready. Fail instead so a supervised
+ * worker restarts with the state worker registered.
+ */
+export function assertStateReady(readiness: StateReadiness): void {
+  if (!readiness.ready) {
+    throw new Error(
+      `State worker did not become ready within ${readiness.waitedMs}ms: ${readiness.error ?? "timeout"}`,
+    );
   }
 }
