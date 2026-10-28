@@ -309,12 +309,14 @@ const PLACEHOLDER_ENTITY_NAMES = new Set([
 ]);
 
 function lastXmlBlock(xml: string, tag: string): string | null {
-  const open = `<${tag}>`;
-  const close = `</${tag}>`;
-  const start = xml.lastIndexOf(open);
-  if (start < 0) return null;
-  const end = xml.indexOf(close, start + open.length);
-  return end < 0 ? null : xml.slice(start + open.length, end);
+  const openRe = new RegExp(`<${tag}\\b[^>]*>`, "g");
+  let last: RegExpExecArray | null = null;
+  let match;
+  while ((match = openRe.exec(xml)) !== null) last = match;
+  if (!last) return null;
+  const start = last.index + last[0].length;
+  const end = xml.indexOf(`</${tag}>`, start);
+  return end < 0 ? null : xml.slice(start, end);
 }
 
 function validEntityName(raw: string | undefined): string | null {
@@ -356,7 +358,6 @@ function parseGraphXml(
     const name = validEntityName(attrs["name"]);
     if (!type || !name) return;
     const properties: Record<string, string> = {};
-    let propertyBytes = 2;
     const propRegex = /<property\s+key="([^"]+)">([^<]*)<\/property>/g;
     let propMatch;
     while ((propMatch = propRegex.exec(propsBlock)) !== null) {
@@ -364,11 +365,11 @@ function parseGraphXml(
       const key = propMatch[1];
       if (key.length > MAX_PROPERTY_KEY_LENGTH) continue;
       const value = propMatch[2].slice(0, MAX_PROPERTY_VALUE_LENGTH);
-      const size =
-        Buffer.byteLength(key) + Buffer.byteLength(value) + 4;
-      if (propertyBytes + size > MAX_PROPERTY_BYTES) break;
+      const candidate = { ...properties, [key]: value };
+      if (Buffer.byteLength(JSON.stringify(candidate)) > MAX_PROPERTY_BYTES) {
+        break;
+      }
       properties[key] = value;
-      propertyBytes += size;
     }
     nodes.push({
       id: generateId("gn"),

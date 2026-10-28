@@ -266,6 +266,48 @@ line two"/>
     );
   });
 
+  it("accepts whitespace in the final wrapper opening tags", async () => {
+    mockProvider.compress.mockResolvedValueOnce(`<entities >
+<entity type="file" name="src/index.ts"/>
+<entity type="function" name="main"/>
+</entities>
+<relationships >
+<relationship type="uses" source="src/index.ts" target="main" weight="0.9"/>
+</relationships>`);
+
+    const result = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean; nodesAdded: number; edgesAdded: number };
+
+    expect(result.success).toBe(true);
+    expect(result.nodesAdded).toBe(2);
+    expect(result.edgesAdded).toBe(1);
+  });
+
+  it("budgets escaped property values by serialized size", async () => {
+    const value = '\\"'.repeat(300);
+    const properties = Array.from(
+      { length: 20 },
+      (_, i) => `<property key="p${i}">${value}</property>`,
+    ).join("");
+    mockProvider.compress.mockResolvedValueOnce(
+      `<entities><entity type="concept" name="valid">${properties}</entity></entities>`,
+    );
+
+    const result = (await sdk.trigger("mem::graph-extract", {
+      observations: [testObs],
+    })) as { success: boolean; nodesAdded: number };
+
+    expect(result.success).toBe(true);
+    expect(result.nodesAdded).toBe(1);
+    const nodes = await kv.list<GraphNode>("mem:graph:nodes");
+    const props = nodes[0].properties ?? {};
+    expect(Object.keys(props).length).toBeLessThan(20);
+    expect(Buffer.byteLength(JSON.stringify(props))).toBeLessThanOrEqual(
+      8 * 1024,
+    );
+  });
+
   it("graph-query with search returns matching nodes", async () => {
     await sdk.trigger("mem::graph-extract", { observations: [testObs] });
 
